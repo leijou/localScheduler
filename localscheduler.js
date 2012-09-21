@@ -104,6 +104,9 @@ localScheduler.getNamespace = function (namespaceid) {
 		localScheduler.connections[scope.namespace] = scope;
 		
 		// Scan for existing tasks that are still queued to run
+		// Also take note of expired tasks for cleanup if this is the first tab
+		var hastasks = false;
+		var pasttasks = [];
 		for (i in localStorage) {
 			if (
 				(localStorage[i]) &&
@@ -117,14 +120,39 @@ localScheduler.getNamespace = function (namespaceid) {
 						if ( (task) && (task.time) ) {
 							if (task.time >= scope.launchtime) {
 								scope.acceptTask(path[1], localStorage[i]);
+								hastasks = true;
 							} else {
-								delete localStorage[i];
+								pasttasks.push(i);
 							}
 						}
 						break;
 				}
 			}
 		}
+		
+		// Add a task for other tabs to run, to see if anyone else is there
+		var pid = localScheduler.randomId();
+		localStorage[scope.PREFIX+'task.'+pid] = JSON.stringify({
+			'worker': '_connect',
+			'time': scope.launchtime,
+			'args': []
+		});
+		pasttasks.push(scope.PREFIX+'task.'+pid);
+		
+		// Check expired tasks to determine if this is the first tab
+		setTimeout(function () {
+			var hit = false;
+			for (var i=0; i<pasttasks.length; i++) {
+				if (localStorage[pasttasks[i]]) {
+					delete localStorage[pasttasks[i]];
+					hit = true;
+				}
+			}
+			if ( (hit) && (!hastasks) ) {
+				scope.callWorker('_startup', []);
+			}
+		}, 500);
+		
 	}
 	
 	/**
@@ -155,7 +183,8 @@ localScheduler.getNamespace = function (namespaceid) {
 		scope.localtasks[pid] = {
 			'worker': worker,
 			'args': args,
-			'timeout': timeout
+			'timeout': timeout,
+			'lock': false
 		};
 		return pid;
 	}
@@ -164,15 +193,25 @@ localScheduler.getNamespace = function (namespaceid) {
 	 * Run a worker in all tabs after a delay
 	 * @public
 	 */
-	scope.broadcast = function (worker, delay, args) {
+	scope.broadcast = function (worker, delay, args, lock) {
 		delay = parseInt(delay) | 0;
-		var pid = scope.local(worker, delay, args);
+		lock = lock ? true : false;
+		var pid = scope.local(worker, delay, args, lock);
 		localStorage[scope.PREFIX+'task.'+pid] = JSON.stringify({
 			'worker': worker,
 			'time': localScheduler.now() + Math.max(0, delay),
 			'args': args,
+			'lock': lock
 		});
 		return pid;
+	}
+	
+	/**
+	 * Run a worker one tab after a delay
+	 * @public
+	 */
+	scope.run = function (worker, delay, args) {
+		return scope.broadcast(worker, delay, args, true);
 	}
 	
 	/**
@@ -185,22 +224,19 @@ localScheduler.getNamespace = function (namespaceid) {
 		delete localStorage[scope.PREFIX+'task.'+pid];
 	}
 	
-	
 	/**
 	 * @private
 	 */
 	scope.changeEvent = function (e) {
 		var path = e.key.substr(scope.PREFIX.length).split('.');
-		switch (path[0]) {
-			case 'task':
-				// Queue new tasks, remove tasks that have been cancelled, and
-				// ignore everything else (assume garbage collection)
-				if (e.newValue == localScheduler.CANCELTASK) {
-					scope.rejectTask(path[1]);
-				} else if (e.oldValue == null) {
-					scope.acceptTask(path[1], e.newValue);
-				}
-				break;
+		if (path[0] == 'task') {
+			// Queue new tasks, remove tasks that have been cancelled, and
+			// ignore everything else (assume garbage collection)
+			if (e.newValue == localScheduler.CANCELTASK) {
+				scope.rejectTask(path[1]);
+			} else if (e.oldValue == null) {
+				scope.acceptTask(path[1], e.newValue);
+			}
 		}
 	}
 	
@@ -211,7 +247,7 @@ localScheduler.getNamespace = function (namespaceid) {
 		scope.localtasks[pid] = JSON.parse(value);
 		scope.localtasks[pid].timeout = setTimeout(function () {
 			scope.startTask(pid);
-		}, scope.localtasks[pid].time - localScheduler.now());
+		}, Math.max(scope.localtasks[pid].time - localScheduler.now(), 0));
 	}
 	
 	/**
@@ -230,12 +266,78 @@ localScheduler.getNamespace = function (namespaceid) {
 	scope.startTask = function (pid) {
 		var task = scope.localtasks[pid];
 		if (!task) return;
+		
+		if (task.lock) {
+			scope.lockTask(pid, task);
+		} else {
+			scope.callWorker(task.worker, task.args);
+			
+			// Clear from localstorage
+			delete localStorage[scope.PREFIX+'task.'+pid];
+			// Clear from pending task list
+			delete scope.localtasks[pid];
+		}
+	}
+	
+	/**
+	 * Compete with all tabs to see who runs a single-run task
+	 * @private
+	 */
+	scope.lockTask = function (pid, task) {
+		var x = scope.PREFIX+'lock.'+pid+'.x';
+		var y = scope.PREFIX+'lock.'+pid+'.y';
+		var z = scope.PREFIX+'task.'+pid;
+		
+		// Locking algorithm based on fast mutex and
+		// http://balpha.de/2012/03/javascript-concurrency-and-locking-the-html5-localstorage/
+		// 
+		// setTimeouts required so that Javascript re-queries localStorage correctly
+		
+		if (!localStorage[z]) return scope.lockTaskCancel(pid);
+		
+		localStorage[x] = localScheduler.localid;
+		setTimeout(function () {
+			if (localStorage[y]) return scope.lockTaskCancel(pid);
+			localStorage[y] = localScheduler.localid;
+			
+			setTimeout(function () {
+				if (localStorage[x] != localScheduler.localid) {
+					setTimeout(function () {
+						if (localStorage[y] != localScheduler.localid) {
+							return scope.lockTaskCancel(pid);
+						}
+						scope.lockTaskComplete(pid, task, x,y,z);
+					}, 0);
+				} else {
+					scope.lockTaskComplete(pid, task, x,y,z);
+				}
+			}, 0);
+		}, 0);
+	}
+	
+	/**
+	 * Called when tab gets the lock on a task
+	 * @private
+	 */
+	scope.lockTaskComplete = function (pid, task, x,y,z) {
+		if (!localStorage[z]) return scope.lockTaskCancel(pid);
+		
+		delete localStorage[z];
+		
 		scope.callWorker(task.worker, task.args);
 		
-		// Clear from pending task list
+		setTimeout(function () {
+			delete localStorage[x];
+			delete localStorage[y];
+		}, 20);
+	}
+	
+	/**
+	 * Called when tab fails to get the lock on a task
+	 * @private
+	 */
+	scope.lockTaskCancel = function (pid, task) {
 		delete scope.localtasks[pid];
-		// Clear from localstorage (first tab to run will do this)
-		delete localStorage[scope.PREFIX+'task.'+pid];
 	}
 	
 	/**
