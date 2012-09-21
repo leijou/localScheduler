@@ -40,6 +40,11 @@ scheduler.broadcast('test', 1000, ["Function run on all open tabs when delay exp
 scheduler.run('test', 1000, ["Function run on only one open tab when delay expires"]);
 ```
 
+All task launchers (`.local`,`.broadcast`,`.run`) accept the task name, the
+delay (milliseconds) before running, and an array of arguments to pass to the
+task. Arguments must be JSON serializable to be transfered over localStorage.
+
+
 Set Interval
 ------------
 A handy use of localScheduler is running a regular task once over all tabs.
