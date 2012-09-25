@@ -293,25 +293,41 @@ localScheduler.getNamespace = function (namespaceid) {
 		// 
 		// setTimeouts required so that Javascript re-queries localStorage correctly
 		
+		// Check Z, Set X
 		if (!localStorage[z]) return scope.lockTaskCancel(pid);
-		
 		localStorage[x] = localScheduler.localid;
 		setTimeout(function () {
+			// Check Z, Check Y, Set Y
+			if (!localStorage[z]) return scope.lockTaskCancel(pid);
 			if (localStorage[y]) return scope.lockTaskCancel(pid);
 			localStorage[y] = localScheduler.localid;
 			
 			setTimeout(function () {
+				// Check Z, Check X
+				if (!localStorage[z]) return scope.lockTaskCancel(pid);
 				if (localStorage[x] != localScheduler.localid) {
+					// If X has been overwritten
+					// Set X
+					localStorage[x] = localScheduler.localid;
+
 					setTimeout(function () {
-						if (localStorage[y] != localScheduler.localid) {
+						// Check Z, Check Y
+						if (!localStorage[z]) return scope.lockTaskCancel(pid);
+						if (localStorage[y] == localScheduler.localid) {
+							// If Y is the same run task
+							return scope.lockTaskComplete(pid, task, x,y,z);
+						} else {
+							// If Y has been overridden give up
 							return scope.lockTaskCancel(pid);
 						}
-						scope.lockTaskComplete(pid, task, x,y,z);
 					}, 0);
+
 				} else {
-					scope.lockTaskComplete(pid, task, x,y,z);
+					// If X is the same run task
+					return scope.lockTaskComplete(pid, task, x,y,z);
 				}
 			}, 0);
+
 		}, 0);
 	}
 	
@@ -321,7 +337,6 @@ localScheduler.getNamespace = function (namespaceid) {
 	 */
 	scope.lockTaskComplete = function (pid, task, x,y,z) {
 		if (!localStorage[z]) return scope.lockTaskCancel(pid);
-		
 		delete localStorage[z];
 		
 		scope.callWorker(task.worker, task.args);
@@ -338,6 +353,11 @@ localScheduler.getNamespace = function (namespaceid) {
 	 */
 	scope.lockTaskCancel = function (pid, task) {
 		delete scope.localtasks[pid];
+
+		setTimeout(function () {
+			delete localStorage[x];
+			delete localStorage[y];
+		}, 20);
 	}
 	
 	/**
