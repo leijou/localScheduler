@@ -44,36 +44,6 @@ All task launchers (`.local`,`.broadcast`,`.run`) accept the task name, the
 delay (milliseconds) before running, and an array of arguments to pass to the
 task. Arguments must be JSON serializable to be transfered over localStorage.
 
-
-Set Interval
-------------
-A handy use of localScheduler is running a regular task once over all tabs.
-This can be done using `.run` and the special `_startup` task. Resulting data
-can be shared to all tabs using `.broadcast`.
-
-`_startup` will only be run on the first tab opened and if no tasks are
-currently queued.
-
-```javascript
-var scheduler = localScheduler.getNamespace('interval');
-
-scheduler.register('_startup', function () {
-	// All tasks are run in the namespace's scope, so you can use this to reference it
-	this.run('random', 1000);
-});
-scheduler.register('random', function () {
-	this.broadcast('message', 0, [Math.floor(Math.random()*1000)]);
-	this.run('random', 1000);
-});
-scheduler.register('message', function (msg) {
-	var div = document.createElement('div');
-    div.innerHTML = msg;
-    document.body.appendChild(div);
-});
-
-scheduler.connect();
-```
-
 More
 ----
 All task launchers (`.local`,`.broadcast`,`.run`) return a string which can be
@@ -81,3 +51,10 @@ given to `.cancel` to cancel the task on all tabs.
 
 There is also the `.disconnect` function to stop the current tab service
 requests for localScheduler.
+
+Notes
+-----
+Please consider this library as experimental for now as there may be some small
+bugs and garbage collection parts missing. Specifically the `.run` method may
+run in more than one tab in Chrome when using separate windows due to what I
+believe is a bug in their localStorage implementation.
